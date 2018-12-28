@@ -1,0 +1,107 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<rss version="2.0">
+<channel>
+<title>Arktronic.com</title>
+<link>http://arktronic.com/</link>
+<description>Arktronic.com blog posts for work syndication</description>
+
+
+        <item>
+        <title>A redone blog, again</title>
+        <link>http://arktronic.com/weblog/2018-12-28/a-redone-blog-again/</link>
+        <pubDate>Fri, 28 Dec 2018 22:20:00 +0000</pubDate>
+        <guid isPermaLink="false">ID 2018-12-28T22:20:00 on http://arktronic.com</guid>
+        <description>&lt;p&gt;I&apos;m just about due for another recreation of my blog, so here we are. &lt;a href=&quot;/weblog/2014-08-09/new-blog-and-new-tea/&quot;&gt;Last time&lt;/a&gt;, I switched from a CMS to a statically generated website, using my own static site generator. This time, I&apos;m taking it a step further and, in addition to recreating my static site generator in .NET Core, harnessing the power of GitHub Actions for &lt;a href=&quot;https://en.wikipedia.org/wiki/CI/CD&quot;&gt;CI/CD&lt;/a&gt; purposes, and I&apos;m using GitHub Pages for hosting.&lt;/p&gt;
+&lt;p&gt;My new static site generator isn&apos;t ready for a proper first release yet, so I won&apos;t talk much about it at this point. Instead, I&apos;ll focus on how I&apos;m using GitHub Actions to deploy blog changes to my staging blog and my production blog. First things first: GitHub Actions is currently in beta. I wouldn&apos;t be surprised if it goes through a lot of changes before it&apos;s released fully. While the beta is mostly functional, it has a number of limitations and bugs. That&apos;s beta software for you. &lt;strong&gt;What I&apos;m trying to get at is, the things I&apos;m going to describe below might not be applicable by the time this feature is out of beta.&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;The idea behind GitHub Actions is relatively straightforward: you configure &amp;quot;actions&amp;quot;, which are simply Docker containers, to do stuff for you. During the public beta, the only available trigger for these actions is a push. That&apos;s good enough for my purposes with this blog. Having never really worked with Docker before, I&apos;m probably doing a lot of stuff in a suboptimal manner, but it works, so there&apos;s that. I&apos;ve got two sections in my GitHub Actions workflow file: the staging section, and the production section. They are very similar, with just a few changes to point to different repos and such.&lt;/p&gt;
+&lt;p&gt;Each section has two actions: a filter and a &amp;quot;do all the things&amp;quot; action. The filter simply ensures that the main action only executes when something is pushed to the correct branch - it&apos;s a branch filter. The setup for it looks like this:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;    action &amp;quot;Filter to master branch&amp;quot; {
+        uses = &amp;quot;actions/bin/filter@b2bea07&amp;quot;
+        args = &amp;quot;branch master&amp;quot;
+    }
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;The &lt;code&gt;uses&lt;/code&gt; directive says that &lt;a href=&quot;https://github.com/actions/bin/tree/b2bea0749eed6beb495a8fa194c071847af60ea1/filter&quot;&gt;this version of the Filter action&lt;/a&gt; should be used, with &lt;code&gt;args&lt;/code&gt; telling the Filter action that I want the branch name to match &amp;quot;master&amp;quot;.&lt;/p&gt;
+&lt;p&gt;The &amp;quot;do all the things&amp;quot; action is where it gets weird. I didn&apos;t want to publish my own GitHub Action for building a static site using my generator for a few reasons. First, as I mentioned earlier, my generator isn&apos;t ready yet. Second, I was having trouble finding the right documentation for precisely how to publish a GitHub Action, what the necessary components are, and how everything works together. And third, I fully expect the publishing process and requirements to change during the beta period, and I&apos;m not overly interested in keeping up with all of these changes at the moment. So, I chose to do this in a bit of a backwards way. I decided to use the Docker CLI GitHub Action to build a Docker image that just happens to perform all the steps I want during the build. It&apos;s mildly horrifying, but here&apos;s what it currently looks like:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;    action &amp;quot;Docker-Staging&amp;quot; {
+        uses = &amp;quot;actions/docker/cli@76ff57a&amp;quot;
+        needs = [&amp;quot;Filter to master branch&amp;quot;]
+        args = &amp;quot;build --build-arg GITHUB_TOKEN --build-arg GH_SOURCE_REPO=\&amp;quot;arktronic/arktronic.com--source\&amp;quot; --build-arg GH_SOURCE_BRANCH=\&amp;quot;master\&amp;quot; --build-arg GH_DEST_REPO=\&amp;quot;arktronic/staging.arktronic.com\&amp;quot; --build-arg GH_DEST_DEPLOY_KEY --build-arg GH_CNAME=\&amp;quot;staging.arktronic.com\&amp;quot; --build-arg ACCEPT_RISK=\&amp;quot;1\&amp;quot; .github/main_support&amp;quot;
+        secrets = [&amp;quot;GITHUB_TOKEN&amp;quot;, &amp;quot;GH_DEST_DEPLOY_KEY&amp;quot;]
+    }
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Let&apos;s dissect that mess. First, we have the familiar &lt;code&gt;uses&lt;/code&gt; directive for &lt;a href=&quot;https://github.com/actions/docker/tree/76ff57a6c3d817840574a98950b0c7bc4e8a13a8/cli&quot;&gt;this action&lt;/a&gt;. The &lt;code&gt;needs&lt;/code&gt; directive helps to set up the chain of actions in my workflow. The &lt;code&gt;secrets&lt;/code&gt; directive tells GitHub which secret environment variables to make available to this action (there is a new tab in GitHub repo settings that lets you manage these secrets). Finally, &lt;code&gt;args&lt;/code&gt; is the messy part here. It&apos;s mostly build arguments, so if you ignore those, you&apos;re left with &lt;code&gt;build .github/main_support&lt;/code&gt;. That&apos;s not so bad. It&apos;s just telling Docker to use the Dockerfile located in the specified relative path. The Dockerfile located in &lt;code&gt;.github/main_support&lt;/code&gt; looks like this:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;    FROM microsoft/dotnet:2.1-sdk
+
+    ARG GITHUB_TOKEN
+    ENV GITHUB_TOKEN=$GITHUB_TOKEN
+    ARG GH_SOURCE_REPO
+    ENV GH_SOURCE_REPO=$GH_SOURCE_REPO
+    ARG GH_SOURCE_BRANCH
+    ENV GH_SOURCE_BRANCH=$GH_SOURCE_BRANCH
+    ARG GH_DEST_REPO
+    ENV GH_DEST_REPO=$GH_DEST_REPO
+    ARG GH_DEST_DEPLOY_KEY
+    ENV GH_DEST_DEPLOY_KEY=$GH_DEST_DEPLOY_KEY
+    ARG GH_PROD_DEPLOY_KEY
+    ENV GH_PROD_DEPLOY_KEY=$GH_PROD_DEPLOY_KEY
+    ARG GH_CNAME
+    ENV GH_CNAME=$GH_CNAME
+    ARG ACCEPT_RISK
+    ENV ACCEPT_RISK=$ACCEPT_RISK
+
+    COPY &amp;quot;entrypoint.sh&amp;quot; &amp;quot;/entrypoint.sh&amp;quot;
+    RUN /entrypoint.sh
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;As you can see, I&apos;m using Microsoft&apos;s .NET Core 2.1 SDK Docker image to build and run my static site generator. After that, there are a whole bunch of &lt;code&gt;ARG&lt;/code&gt; and &lt;code&gt;ENV&lt;/code&gt; directives, which take all those &lt;code&gt;--build-arg&lt;/code&gt; arguments from the GitHub Actions workflow and transform them into environment variables that are available to the container. Finally, a single shell script is copied into the container and then executed. That shell script is where most of the magic happens:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;    #!/bin/bash
+
+    set -e
+
+    cd /srv
+    mkdir ~/.ssh
+    echo -e &amp;quot;$GH_DEST_DEPLOY_KEY&amp;quot; &amp;gt;&amp;gt; ~/.ssh/id_rsa 2&amp;gt;/dev/null
+    echo -e &amp;quot;$GH_PROD_DEPLOY_KEY&amp;quot; &amp;gt;&amp;gt; ~/.ssh/id_rsa 2&amp;gt;/dev/null
+    chmod 600 ~/.ssh/id_rsa
+    ssh-keyscan -t rsa github.com &amp;gt; ~/.ssh/known_hosts 2&amp;gt;/dev/null
+
+    if [ &amp;quot;$ACCEPT_RISK&amp;quot; == &amp;quot;1&amp;quot; ]; then
+    echo &amp;quot;Risk accepted - will force push!&amp;quot; &amp;gt;&amp;amp;2
+    export PUSH_PARAMS=&amp;quot;-f&amp;quot;
+    else
+    echo &amp;quot;Risk not accepted - will perform dry run.&amp;quot; &amp;gt;&amp;amp;2
+    export PUSH_PARAMS=&amp;quot;-n -f&amp;quot;
+    fi
+
+    git config --global user.name &amp;quot;BuildBot&amp;quot;
+    git config --global user.email &amp;quot;noreply@example.com&amp;quot;
+
+    git clone https://github.com/arktronic/genmaicha.git /srv/genmaicha
+    dotnet publish -c Release -o /srv/genmaicha/publish /srv/genmaicha/Genmaicha/Genmaicha.csproj
+
+    echo &amp;quot;Shallow cloning $GH_SOURCE_REPO, branch $GH_SOURCE_BRANCH&amp;quot;
+    git clone --depth 1 --branch $GH_SOURCE_BRANCH https://$GITHUB_TOKEN@github.com/$GH_SOURCE_REPO.git input &amp;amp;&amp;gt;/dev/null
+    dotnet genmaicha/publish/genmaicha.dll -o input/
+
+    cd input/_build
+    echo $GH_CNAME &amp;gt;CNAME
+    git init
+    git checkout -b master
+    git add -A
+    git commit -m &amp;quot;Recreate GitHub Pages&amp;quot;
+    git remote add origin git@github.com:$GH_DEST_REPO.git
+    echo &amp;quot;Pushing to $GH_DEST_REPO with params &apos;$PUSH_PARAMS&apos;&amp;quot;
+    git push $PUSH_PARAMS origin master
+
+    echo Done
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;The &lt;code&gt;set -e&lt;/code&gt; line tells Bash to stop executing the script after the first time it encounters a non-zero exit code, i.e., after the first error. This is important because otherwise we could potentially end up deploying something invalid.&lt;/p&gt;
+&lt;p&gt;The next few lines set up SSH. There are two lines that try to throw a private key into &lt;code&gt;~/.ssh/id_rsa&lt;/code&gt;, but realistically, only one of them should succeed, since the workflow is set up to provide either the staging one or the production one - not both. That file then needs its permissions adjusted because SSH doesn&apos;t like it when private keys are world-readable. Go figure. And finally, in order to have SSH trust GitHub, its public key is retrieved and pushed to the &lt;code&gt;known_hosts&lt;/code&gt; file.&lt;/p&gt;
+&lt;p&gt;After setting up SSH, I&apos;ve got some risk avoidance code, which will either let Git force push, or merely perform a dry run (&lt;code&gt;-n&lt;/code&gt;). Better safe than sorry. And then the local Git user info is set up for the eventual commit that will be created and force pushed.&lt;/p&gt;
+&lt;p&gt;Building my static site generator just takes a couple of lines: cloning its repo, and executing &lt;code&gt;dotnet publish&lt;/code&gt; on it. After that, the blog source code is shallow cloned and then processed by the newly-built generator, with the output going into the &lt;code&gt;_build&lt;/code&gt; directory.&lt;/p&gt;
+&lt;p&gt;Finally, a new Git repo is created in the &lt;code&gt;_build&lt;/code&gt; directory, everything is committed, and the contents are then force pushed to the target repo, which should already be set up to use GitHub Pages for hosting.&lt;/p&gt;
+&lt;p&gt;All of this code (and, incidentally, this blog post) is currently located &lt;a href=&quot;https://github.com/arktronic/arktronic.com--source&quot;&gt;here&lt;/a&gt;. Feel free to take a look at it. And I would definitely recommend for people to check out GitHub Actions because it&apos;s an extremely powerful tool, which can be utilized for many useful purposes.&lt;/p&gt;
+</description>
+        </item>
+
+</channel>
+</rss>
